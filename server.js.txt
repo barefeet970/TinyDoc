@@ -1,0 +1,50 @@
+const express = require('express');
+const cors = require('cors');
+const multer = require('multer');
+const { exec } = require('child_process');
+const path = require('path');
+const fs = require('fs');
+const { v4: uuidv4 } = require('uuid');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+const UPLOAD_DIR = path.join(__dirname, 'uploads');
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
+
+app.use(cors());
+app.use(express.json());
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
+  filename: (req, file, cb) => cb(null, `${uuidv4()}_${file.originalname.replace(/\s/g, '_')}`)
+});
+const upload = multer({ 
+  storage, 
+  limits: { fileSize: 50 * 1024 * 1024 }, 
+  fileFilter: (req, file, cb) => {
+    file.mimetype === 'application/pdf' ? cb(null, true) : cb(new Error('Only PDFs'));
+  }
+});
+
+app.post('/api/compress', upload.single('pdf'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file' });
+
+  const preset = req.body.preset || 'medium';
+  const quality = preset === 'light' ? '/printer' : preset === 'heavy' ? '/screen' : '/ebook';
+  const outPath = path.join(UPLOAD_DIR, `comp_${req.file.filename}`);
+
+  const cmd = `gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=${quality} -dNOPAUSE -dQUIET -dBATCH -sOutputFile="${outPath}" "${req.file.path}"`;
+
+  exec(cmd, { timeout: 120000 }, (err) => {
+    if (err) {
+      fs.unlinkSync(req.file.path);
+      return res.status(500).json({ error: 'Compression failed' });
+    }
+    res.download(outPath, `compressed_${req.file.originalname}`, () => {
+      fs.unlink(req.file.path, () => {});
+      fs.unlink(outPath, () => {});
+    });
+  });
+});
+
+app.listen(PORT, () => console.log(`✅ Backend running on port ${PORT}`));
